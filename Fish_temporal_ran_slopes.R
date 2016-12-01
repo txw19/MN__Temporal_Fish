@@ -1,95 +1,131 @@
 require(jagsUI)
 require(doBy)
-
+# rm(list=ls())
 ########################################################
 # Format data
-dat <- read.csv("MN_fish_timeseries.csv") 
+dat <- read.csv("MN_GN_CPUE_all_lakes.csv") 
 head(dat)
+length(unique(dat$DOW))
+
+temp <- read.csv("temperature_data_for_ty.csv") 
+head(temp)
+
+wqdat <- read.csv("wq_data_for_ty.csv")
+head(wqdat)
 
 ## Clean data
-# Sites with no DD data (some sites may have some missing DD)
-noTemp <- aggregate(dat$gdd_wtr_5c,list(dat$DOW), mean, na.rm=T)
-withTemp <- noTemp[!is.na(noTemp$x),]
-
-# Only use sites that have modeled temp data
-dat <- dat[dat$DOW %in% withTemp$Group.1,]
-summary(dat)
-
-# Remove sites with zero lake area
-noArea <- aggregate(dat$LAKE_AREA_DOW_ACRES,list(dat$DOW), mean, na.rm=T)
-withArea <- noArea[noArea$x!=0,]
-
-dat <- dat[dat$DOW %in% withArea$Group.1,]
-summary(dat)
-
 # Select out lakes with n >= X
 tbl1 <- table(dat$DOW)
-dat <- dat[dat$DOW %in% names(tbl1)[tbl1 >=10],]
+dat <- dat[dat$DOW %in% names(tbl1)[tbl1 >=8],]
+length(unique(dat$DOW))
+head(dat)
+range(dat$Year)
 
-####### DATA PREP
-Sites <- unique(dat$DOW)
-nSites <- length(Sites)
-nYears <- length(unique(dat$Year))
-Years <- as.data.frame(seq(min(dat$Year),max(dat$Year),1))
-Years$idx <- NA
-colnames(Years) <- c("Year","idx")
+# Select temp data for lakes in dat
+temp <- temp[temp$DOW %in% dat$DOW,]
+length(unique(temp$DOW))
 
-# dat[dat$DOW==1000100,]
+# Convert ice-off date to decimal day of year
+temp$ice_off_date <- as.POSIXct(temp$ice_off_date, format="%m/%d/%Y")
+temp$ice_off_julian <- as.numeric(strftime(temp$ice_off_date, format = "%j"))
+head(temp)
 
-# Create matrix [i,t]: Response variable
-ys <- matrix(nrow=nSites, ncol=nYears)
-yx <- dat[c("DOW", "Year", "YEP")]
-for(i in 1:nSites){
-  siteidx <- Sites[i]
-  yx1 <- subset(yx, DOW==siteidx)
-  yx2 <- merge(Years, yx1, by="Year", all=T)
-  ys[i,] <- t(yx2$YEP)
-}
-ys <- log(ys+0.1) # log-transform
-rm(yx, yx1, yx2)
+# Not all lakes in dat have temp, so remove lakes in dat that are not in temp
+dat <- dat[dat$DOW %in% temp$DOW,]
+length(unique(dat$DOW))
 
+# Grab water quality data for lakes in dat
+wqdat <- wqdat[wqdat$DOW %in% dat$DOW,]
+length(unique(dat$DOW))
 
-# Create DD predictor matrix [i,t]
-dd <- matrix(nrow=nSites, ncol=nYears)
-ddx <- dat[c("DOW", "Year", "gdd_wtr_5c")]
-for(i in 1:nSites){
-  siteidx <- Sites[i]
-  ddx1 <- subset(ddx, DOW==siteidx)
-  ddx2 <- merge(Years, ddx1, by="Year", all=T)
-  dd[i,] <- t(ddx2$gdd_wtr_5c)
-}
-dd <- scale(dd) # z-scores by year
-dd[is.na(dd)] <- 0 # assuming mean values for unsampled years
-rm(ddx, ddx1, ddx2)
+# Look at years contained in all datasets - match them up
+range(dat$Year)
+range(temp$Year)
+range(wqdat$SAMPLE_YEAR)
 
-# Create Walleye predictor matrix [i,t]
-wae <- matrix(nrow=nSites, ncol=nYears)
-waex <- dat[c("DOW", "Year", "WAE")]
-for(i in 1:nSites){
-  siteidx <- Sites[i]
-  waex1 <- subset(waex, DOW==siteidx)
-  waex2 <- merge(Years, waex1, by="Year", all=T)
-  wae[i,] <- t(waex2$WAE)
-}
-wae <- log(wae + 0.1) # log-transform
-wae <- scale(wae) # z-scores by year
-wae[is.na(wae)] <- 0 # assuming mean values for unsampled years
-rm(waex, waex1, waex2)
+# Remove sample year 2016 from dat - other data sets only go to 2015
+# and start all data sets at 1987 (latest date for cpe data)
+dat <- dat[dat$Year < 2016, ]
+range(dat$Year)
 
+temp <- temp[temp$Year > 1986, ]
+range(temp$Year)
+
+wqdat <- wqdat[wqdat$SAMPLE_YEAR > 1986, ]
+range(wqdat$SAMPLE_YEAR)
+
+# Sort data frames by DOW and Year for simplicity
+dat <- dat[order(dat$DOW, dat$Year), ]
+temp <- temp[order(temp$DOW, temp$Year), ]
+wqdat <- wqdat[order(wqdat$DOW, wqdat$SAMPLE_YEAR), ]
+
+# max(table(dat$DOW, dat$Year))
+
+# Fill in missing years for all lakes with NA in dat
+datY <- expand.grid(DOW = unique(dat$DOW), Year = min(dat$Year):max(dat$Year))
+head(datY)
+
+# Grab YEP data
+yep <- dat[c("DOW", "Year", "YEP")]
+
+# Merge yep with datY that has missing data for years with no data for each lake
+yep <- merge(yep,datY,all=TRUE)
+dim(yep)
+head(yep)
+length(unique(yep$Year))
+
+# Grab WAE data
+wae <- dat[c("DOW", "Year", "WAE")]
+wae <- merge(wae,datY,all=TRUE)
+dim(wae)
+head(wae)
+length(unique(wae$Year))
+
+# Convert to matrices [i, t]
+nSites <- length(unique(yep$DOW))
+nYears <- length(unique(yep$Year))
+# Matrices of CPE data
+# Response variable
+yepM <- matrix(yep$YEP, nrow=nSites, ncol=nYears, byrow=T)
+# Log-tranform CPE
+yepM <- log(yepM + 0.1)
+# Predictor
+waeM <- matrix(wae$WAE, nrow=nSites, ncol=nYears, byrow=T)
+# Log-tranform CPE
+waeM <- log(waeM + 0.1)
+waeM[is.na(waeM)] <- 0 # assuming mean values for unsampled years
+
+# Create matrices of temperature and water quality data
+head(temp)
+dd <- matrix(temp$gdd_wtr_5c, nrow=nSites, ncol=nYears, byrow=T)
+dd <- scale(dd)
+sum(is.na(dd)) # Check for any missing values (NAs)
+
+iceoff <- matrix(temp$ice_off_julian, nrow=nSites, ncol=nYears, byrow=T)
+iceoff <- scale(iceoff)
+sum(is.na(iceoff))
+
+iceduration <- matrix(temp$ice_duration_days, nrow=nSites, ncol=nYears, byrow=T)
+iceduration <- scale(iceduration)
+sum(is.na(iceduration))
+
+coefvar <- matrix(temp$coef_var_30.60, nrow=nSites, ncol=nYears, byrow=T)
+coefvar <- scale(coefvar)
+sum(is.na(coefvar))
 
 # Create lake-level covariate vectors [i]: elevation, basin size, gradient
-area <- as.numeric(by(dat$LAKE_AREA_DOW_ACRES, dat$DOW, mean))
+area <- as.numeric(by(dat$LAKE_AREA_GIS_ACRES, dat$DOW, mean))
 area <- log(area)
-area <- scale(area)
+area <- as.numeric(scale(area))
 depth <- as.numeric(by(dat$MAX_DEPTH_FEET, dat$DOW, mean))
 depth <- log(depth)
-depth <- scale(depth)
+depth <- as.numeric(scale(depth))
 
 ########################################################
 # Compile data
-data <- list(ys=ys, # YEP CPE [i, t]
+data <- list(ys=yepM, # YEP CPE [i, t]
              dd=dd, # DD [i, t]
-             wae=wae, # WAE CPE [i, t]
+             wae=waeM, # WAE CPE [i, t]
              area=area, # Lake area [i]
              depth=depth, # Lake depth [i]
              nSites=nSites, # count of sites
@@ -116,10 +152,10 @@ writeLines("
     # hyperpriors
     mu.b ~ dnorm(0, 0.001)
     tau.b <- pow(sigma.b, -2)
-    sigma.b ~ dunif(0, 10)
+    sigma.b ~ dunif(0, 20)
     mu.b2 ~ dnorm(0, 0.001)
     tau.b2 <- pow(sigma.b, -2)
-    sigma.b2 ~ dunif(0, 10)
+    sigma.b2 ~ dunif(0, 20)
   
 
           for(i in 1:nSites){
@@ -135,7 +171,7 @@ writeLines("
            alpha ~ dunif(-5,5)
            g1 ~ dnorm(0, 0.0001)
            g2 ~ dnorm(0, 0.0001)
-           sigma ~ dunif(0, 10)
+           sigma ~ dunif(0, 20)
            tau <- pow(sigma, -2)
            }
            ", con="model.txt")
@@ -168,8 +204,8 @@ out.tw <- jags(data=data,
             model.file=modfile,
             n.chains=3,
             n.adapt=100,
-            n.iter=12000,
-            n.burnin=10000,
+            n.iter=24000,
+            n.burnin=20000,
             n.thin=2)
 save(out.tw, file="out_tw.R")
 
@@ -189,14 +225,15 @@ n.keep <- out.tw$mcmc.info$n.samples
 output <- out.tw$samples
 # Combine all three chains
 output2 <- rbind(output[[1]], output[[2]], output[[3]])
+head(output2)
+dim(output2)
+# Exclude deviance column
+output2 <- output2[,-204]
+
+# Posterior means
+postmeans <- apply(output2, 2, mean)
 
 
-
-par(mfrow=c(5,3), mar=c(3,4,1,0), oma=c(1,1,1,1), las=1)
-for(i in 1:7){
-  hist(output2[,i], main=params.names[i], xlab="", col="black")
-  abline(v=0, col="red", lty=2)
-}
 
 
 ####### MORE DETAILED PLOTS OF POSTEROR DISTRIBUTIONS
